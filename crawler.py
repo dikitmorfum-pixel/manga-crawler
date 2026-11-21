@@ -159,12 +159,7 @@ async def main(site):
     await init_db(conn)
     async with aiohttp.ClientSession() as session:
         print(f"[*] {base}")
-        urls = await collect(session, base)
-        print(f"[*] {len(urls)} mangas")
-        for i, u in enumerate(urls, 1):
-            print(f"\n[{i}/{len(urls)}] {u}")
-            await crawl_manga(session, conn, u, base)
-            await asyncio.sleep(DELAY)
+        await crawl_manga(session, conn, base, "https://toonlivre.net")
     await conn.close()
     print("[OK] done.")
 
