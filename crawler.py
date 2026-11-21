@@ -44,13 +44,12 @@ async def get_json(session, url):
     except Exception as e:
         print(f"  [ERR] {url} {e}")
 
-async def crawl_chapter(session, conn, manga_id, chap):
-    num = float(chap.get("chapter") or 0)
-    link = chap.get("link") or ""
-    if not link:
-        return
-    cslug = Path(link.rstrip("/")).name
-    ctitle = f"Capitulo {num:g}"
+num = float(chap.get("chapter") or 0)
+link = chap.get("link") or ""
+if not link or num == 0:
+    return
+cslug = link.rstrip("/").split("/leer/")[-1]
+ctitle = f"Capitulo {num:g}"
 
     cid = await conn.fetchval(
         "INSERT INTO chapters (manga_id,slug,title,number,source_url) VALUES ($1,$2,$3,$4,$5) "
