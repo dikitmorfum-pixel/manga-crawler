@@ -1,11 +1,9 @@
-import asyncio, aiohttp, argparse, os, re
+import asyncio, aiohttp, os, re
 from pathlib import Path
-from urllib.parse import urlparse
 import asyncpg
 
 DB_DSN = os.environ.get("DB_DSN", "")
 DELAY = 1.0
-CONCURRENCY = 5
 BASE = "https://manhwaweb.com"
 API = "https://api.manhwaweb.com"
 
@@ -44,20 +42,20 @@ async def get_json(session, url):
     except Exception as e:
         print(f"  [ERR] {url} {e}")
 
-num = float(chap.get("chapter") or 0)
-link = chap.get("link") or ""
-if not link or num == 0:
-    return
-cslug = link.rstrip("/").split("/leer/")[-1]
-ctitle = f"Capitulo {num:g}"
+async def crawl_chapter(session, conn, manga_id, chap):
+    num = float(chap.get("chapter") or 0)
+    link = chap.get("link") or ""
+    if not link or num == 0:
+        return
+    cslug = link.rstrip("/").split("/leer/")[-1]
+    ctitle = f"Capitulo {num:g}"
 
     cid = await conn.fetchval(
         "INSERT INTO chapters (manga_id,slug,title,number,source_url) VALUES ($1,$2,$3,$4,$5) "
         "ON CONFLICT (manga_id,slug) DO UPDATE SET title=EXCLUDED.title RETURNING id",
         manga_id, cslug, ctitle, num, link)
 
-    chap_key = cslug
-    data = await get_json(session, f"{API}/chapters/see/{chap_key}")
+    data = await get_json(session, f"{API}/chapters/see/{cslug}")
     if not data:
         return
 
@@ -135,7 +133,7 @@ async def main():
     conn = await asyncpg.connect(DB_DSN, statement_cache_size=0)
     await init_db(conn)
     async with aiohttp.ClientSession() as session:
-        print(f"[*] coletando lista...")
+        print("[*] coletando lista...")
         mangas = await collect(session)
         print(f"[*] {len(mangas)} mangas")
         for i, manga in enumerate(mangas, 1):
