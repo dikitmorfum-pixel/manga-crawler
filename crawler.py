@@ -3,6 +3,7 @@ from pathlib import Path
 from urllib.parse import urljoin, urlparse
 import asyncpg
 from bs4 import BeautifulSoup
+
 DB_DSN = os.environ.get("DB_DSN", "")
 IMAGE_DIR = Path("./images")
 DELAY = 1.5
@@ -19,6 +20,7 @@ SEL = {
     "chapters": "li.wp-manga-chapter a",
     "images": ".reading-content img",
 }
+
 async def init_db(c):
     await c.execute("""
         CREATE TABLE IF NOT EXISTS mangas (
@@ -33,12 +35,15 @@ async def init_db(c):
             id SERIAL PRIMARY KEY, chapter_id INTEGER REFERENCES chapters(id) ON DELETE CASCADE,
             page_number INTEGER NOT NULL, image_path TEXT NOT NULL, UNIQUE(chapter_id, page_number));
     """)
+
 def slugify(t):
     t = re.sub(r"[^\w\s-]", "", t.lower().strip())
     return re.sub(r"[\s_-]+", "-", t)[:120]
+
 def chapnum(t):
     m = re.search(r"\d+(?:[.,]\d+)?", t)
     return float(m.group().replace(",", ".")) if m else 0.0
+
 async def get(session, url):
     try:
         async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=20)) as r:
@@ -60,6 +65,7 @@ async def dl(session, url, dest):
                 return True
     except Exception as e:
         print(f"  [IMG] {url} {e}")
+
 async def crawl_chapter(session, conn, manga_id, manga_slug, url):
     soup = await get(session, url)
     if not soup:
@@ -90,18 +96,19 @@ async def crawl_chapter(session, conn, manga_id, manga_slug, url):
         tasks.append(one(i, src, IMAGE_DIR / manga_slug / cslug / f"{i:04d}{ext}", cid))
     await asyncio.gather(*tasks)
     print(f"    {ctitle} ({len(tasks)}p)")
+
 async def crawl_manga(session, conn, manga_url, base):
     soup = await get(session, manga_url)
     if not soup:
         return
-   tel = soup.select_one(SEL["title"])
-if not tel:
-    print(f"  [SKIP] título não encontrado em {manga_url}")
-    return
-title = tel.get_text(strip=True)
-if not title:
-    print(f"  [SKIP] título vazio em {manga_url}")
-    return
+    tel = soup.select_one(SEL["title"])
+    if not tel:
+        print(f"  [SKIP] título não encontrado em {manga_url}")
+        return
+    title = tel.get_text(strip=True)
+    if not title:
+        print(f"  [SKIP] título vazio em {manga_url}")
+        return
     slug = slugify(title)
     cel = soup.select_one(SEL["cover"])
     csrc = (cel.get("data-src") or cel.get("src")) if cel else None
@@ -127,6 +134,7 @@ if not title:
     for u in urls:
         await crawl_chapter(session, conn, mid, slug, u)
         await asyncio.sleep(DELAY)
+
 async def collect(session, base):
     urls, page = [], 1
     while True:
@@ -143,6 +151,7 @@ async def collect(session, base):
         page += 1
         await asyncio.sleep(DELAY)
     return list(dict.fromkeys(urls))
+
 async def main(site):
     base = site.rstrip("/")
     IMAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -158,6 +167,7 @@ async def main(site):
             await asyncio.sleep(DELAY)
     await conn.close()
     print("[OK] done.")
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--site", default="https://toonlivre.net")
