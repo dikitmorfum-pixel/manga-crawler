@@ -1,12 +1,11 @@
-import asyncio, aiohttp, aiofiles, argparse, os, re
+import asyncio, aiohttp, argparse, os, re
 from pathlib import Path
 from urllib.parse import urlparse
 import asyncpg
 
 DB_DSN = os.environ.get("DB_DSN", "")
-IMAGE_DIR = Path("./images")
 DELAY = 1.0
-CONCURRENCY = 3
+CONCURRENCY = 5
 BASE = "https://manhwaweb.com"
 API = "https://api.manhwaweb.com"
 
@@ -21,7 +20,7 @@ async def init_db(c):
     await c.execute("""
         CREATE TABLE IF NOT EXISTS mangas (
             id SERIAL PRIMARY KEY, slug TEXT UNIQUE NOT NULL, title TEXT NOT NULL,
-            cover_path TEXT, synopsis TEXT, genres TEXT[], status TEXT, source_url TEXT,
+            cover_url TEXT, synopsis TEXT, genres TEXT[], status TEXT, source_url TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW());
         CREATE TABLE IF NOT EXISTS chapters (
             id SERIAL PRIMARY KEY, manga_id INTEGER REFERENCES mangas(id) ON DELETE CASCADE,
@@ -36,16 +35,6 @@ def slugify(t):
     t = re.sub(r"[^\w\s-]", "", t.lower().strip())
     return re.sub(r"[\s_-]+", "-", t)[:120]
 
-def chapnum(t):
-    m = re.search(r"\d+(?:[.,]\d+)?", str(t))
-    return float(m.group().replace(",", ".")) if m else 0.0
-
-def chapslug(num):
-    n = str(num).replace(".", "_")
-    if "." not in str(num):
-        n = f"{int(num):d}_01"
-    return n
-
 async def get_json(session, url):
     try:
         async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=20)) as r:
@@ -55,38 +44,40 @@ async def get_json(session, url):
     except Exception as e:
         print(f"  [ERR] {url} {e}")
 
-async def crawl_chapter(session, conn, manga_id, manga_slug, real_id, chap):
-    num = chapnum(chap.get("numero") or chap.get("number") or chap.get("_numero") or 0)
-    ctitle = f"Capitulo {num}"
-    cslug = slugify(ctitle)
-    source_url = f"{BASE}/leer/{real_id}-{chapslug(num)}"
+async def crawl_chapter(session, conn, manga_id, chap):
+    num = float(chap.get("chapter") or 0)
+    link = chap.get("link") or ""
+    if not link:
+        return
+    cslug = Path(link.rstrip("/")).name
+    ctitle = f"Capitulo {num:g}"
 
     cid = await conn.fetchval(
         "INSERT INTO chapters (manga_id,slug,title,number,source_url) VALUES ($1,$2,$3,$4,$5) "
         "ON CONFLICT (manga_id,slug) DO UPDATE SET title=EXCLUDED.title RETURNING id",
-        manga_id, cslug, ctitle, num, source_url)
+        manga_id, cslug, ctitle, num, link)
 
-    chap_key = f"{real_id}-{chapslug(num)}"
+    chap_key = cslug
     data = await get_json(session, f"{API}/chapters/see/{chap_key}")
     if not data:
         return
 
     imgs = data if isinstance(data, list) else (
         data.get("pages") or data.get("imagenes") or data.get("images") or
-        data.get("imgs") or data.get("capitulo") or [])
+        data.get("imgs") or [])
 
-    tasks = []
+    inserts = []
     for i, img in enumerate(imgs, 1):
         src = img if isinstance(img, str) else (
             img.get("url") or img.get("src") or img.get("imagen") or img.get("img") or "")
         if src:
-            tasks.append(conn.execute(
-                "INSERT INTO pages (chapter_id,page_number,image_path) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
-                cid, i, src))
+            inserts.append((cid, i, src))
 
-    if tasks:
-        await asyncio.gather(*tasks)
-    print(f"    cap {num} ({len(tasks)}p)")
+    if inserts:
+        await conn.executemany(
+            "INSERT INTO pages (chapter_id,page_number,image_path) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+            inserts)
+    print(f"    cap {num:g} ({len(inserts)}p)")
 
 async def crawl_manga(session, conn, manga):
     real_id = manga.get("real_id") or manga.get("_id") or ""
@@ -97,34 +88,31 @@ async def crawl_manga(session, conn, manga):
     slug = slugify(title)
     print(f"  -> {title}")
 
-    cover_path = manga.get("_imagen") or ""
+    cover_url = manga.get("_imagen") or ""
     status = manga.get("_status") or "desconhecido"
     demografia = manga.get("_demografi") or ""
     genres = [demografia] if demografia else []
     source_url = f"{BASE}/manhwa/{real_id}"
 
     mid = await conn.fetchval(
-        "INSERT INTO mangas (slug,title,cover_path,synopsis,genres,status,source_url) "
+        "INSERT INTO mangas (slug,title,cover_url,synopsis,genres,status,source_url) "
         "VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (slug) DO UPDATE SET title=EXCLUDED.title RETURNING id",
-        slug, title, cover_path, "", genres, status, source_url)
+        slug, title, cover_url, "", genres, status, source_url)
 
     detail = await get_json(session, f"{API}/manhwa/see/{real_id}")
     if not detail:
         return
 
-    synopsis = detail.get("sinopsis") or detail.get("synopsis") or detail.get("descripcion") or ""
+    synopsis = detail.get("_sinopsis") or detail.get("sinopsis") or ""
     if synopsis:
         await conn.execute("UPDATE mangas SET synopsis=$1 WHERE id=$2", synopsis, mid)
 
-    chapters = (detail.get("capitulos") or detail.get("chapters") or
-                detail.get("caps") or detail.get("capitulo") or [])
-    if isinstance(chapters, list):
-        chapters = sorted(chapters, key=lambda c: chapnum(
-            c.get("numero") or c.get("number") or 0))
+    chapters = detail.get("chapters") or []
+    chapters = sorted(chapters, key=lambda c: float(c.get("chapter") or 0))
     print(f"     {len(chapters)} caps")
 
     for chap in chapters:
-        await crawl_chapter(session, conn, mid, slug, real_id, chap)
+        await crawl_chapter(session, conn, mid, chap)
         await asyncio.sleep(DELAY)
 
 async def collect(session):
@@ -145,7 +133,6 @@ async def collect(session):
     return mangas
 
 async def main():
-    IMAGE_DIR.mkdir(parents=True, exist_ok=True)
     conn = await asyncpg.connect(DB_DSN, statement_cache_size=0)
     await init_db(conn)
     async with aiohttp.ClientSession() as session:
