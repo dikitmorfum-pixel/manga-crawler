@@ -9,16 +9,18 @@ IMAGE_DIR = Path("./images")
 DELAY = 1.5
 CONCURRENCY = 3
 HEADERS = {"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36", "Accept-Language": "pt-BR,pt;q=0.9"}
+BASE = "https://manhwaweb.com"
+
 SEL = {
-    "list": "/manga/?m_orderby=alphabet&status=end&page={}",
-    "cards": ".c-image-hover a",
-    "title": ".post-title h1",
-    "cover": ".summary_image img",
-    "synopsis": ".summary__content p",
-    "genres": ".genres-content a",
-    "status": ".post-status .summary-content",
-    "chapters": "li.wp-manga-chapter a",
-    "images": ".reading-content img",
+    "list": "/manhwa?page={}",
+    "cards": "a[href*='/manhwa/']",
+    "title": "h1",
+    "cover": "img.object-cover",
+    "synopsis": ".summary p, .sinopsis p, .description p",
+    "genres": "a[href*='/genero/']",
+    "status": ".status, .estado",
+    "chapters": "a[href*='/capitulo/'], a[href*='/chapter/']",
+    "images": ".reading-content img, .chapter-content img, main img",
 }
 
 async def init_db(c):
@@ -70,8 +72,7 @@ async def crawl_chapter(session, conn, manga_id, manga_slug, url):
     soup = await get(session, url)
     if not soup:
         return
-    el = soup.select_one("ol.breadcrumb li:last-child")
-    ctitle = el.get_text(strip=True) if el else Path(url).name
+    ctitle = Path(url.rstrip("/")).name
     cslug = slugify(ctitle)
     cnum = chapnum(ctitle)
     cid = await conn.fetchval(
@@ -97,7 +98,7 @@ async def crawl_chapter(session, conn, manga_id, manga_slug, url):
     await asyncio.gather(*tasks)
     print(f"    {ctitle} ({len(tasks)}p)")
 
-async def crawl_manga(session, conn, manga_url, base):
+async def crawl_manga(session, conn, manga_url):
     soup = await get(session, manga_url)
     if not soup:
         return
@@ -114,6 +115,8 @@ async def crawl_manga(session, conn, manga_url, base):
     csrc = (cel.get("data-src") or cel.get("src")) if cel else None
     cover_path = None
     if csrc:
+        if csrc.startswith("/"):
+            csrc = BASE + csrc
         ext = Path(urlparse(csrc).path).suffix or ".jpg"
         cf = IMAGE_DIR / "covers" / f"{slug}{ext}"
         if await dl(session, csrc, cf):
@@ -128,42 +131,53 @@ async def crawl_manga(session, conn, manga_url, base):
         "VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (slug) DO UPDATE SET title=EXCLUDED.title RETURNING id",
         slug, title, cover_path, synopsis, genres, status, manga_url)
     links = soup.select(SEL["chapters"])
-    urls = list(dict.fromkeys([urljoin(base, a["href"]) for a in links if a.get("href")]))
+    urls = list(dict.fromkeys([
+        urljoin(BASE, a["href"]) for a in links if a.get("href")
+        and ("/capitulo/" in a["href"] or "/chapter/" in a["href"])
+    ]))
     urls.reverse()
     print(f"  -> {title} ({len(urls)} caps)")
     for u in urls:
         await crawl_chapter(session, conn, mid, slug, u)
         await asyncio.sleep(DELAY)
 
-async def collect(session, base):
+async def collect(session):
     urls, page = [], 1
     while True:
-        soup = await get(session, base + SEL["list"].format(page))
+        soup = await get(session, BASE + SEL["list"].format(page))
         if not soup:
             break
         cards = soup.select(SEL["cards"])
-        if not cards:
+        new = [urljoin(BASE, a["href"]) for a in cards if a.get("href") and "/manhwa/" in a["href"]]
+        new = [u for u in new if u not in urls]
+        if not new:
             break
-        for a in cards:
-            if a.get("href"):
-                urls.append(urljoin(base, a["href"]))
-        print(f"  Pagina {page}: {len(cards)} mangas")
+        urls.extend(new)
+        print(f"  Pagina {page}: {len(new)} mangas")
         page += 1
         await asyncio.sleep(DELAY)
     return list(dict.fromkeys(urls))
 
 async def main(site):
-    base = site.rstrip("/")
     IMAGE_DIR.mkdir(parents=True, exist_ok=True)
     conn = await asyncpg.connect(DB_DSN)
     await init_db(conn)
     async with aiohttp.ClientSession() as session:
-        print(f"[*] {base}")
-        await crawl_manga(session, conn, base, "https://toonlivre.net")
+        if site != BASE:
+            print(f"[*] manga direto: {site}")
+            await crawl_manga(session, conn, site)
+        else:
+            print(f"[*] {BASE}")
+            urls = await collect(session)
+            print(f"[*] {len(urls)} mangas")
+            for i, u in enumerate(urls, 1):
+                print(f"\n[{i}/{len(urls)}] {u}")
+                await crawl_manga(session, conn, u)
+                await asyncio.sleep(DELAY)
     await conn.close()
     print("[OK] done.")
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--site", default="https://toonlivre.net")
+    p.add_argument("--site", default=BASE)
     asyncio.run(main(p.parse_args().site))
