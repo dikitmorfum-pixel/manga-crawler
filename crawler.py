@@ -146,7 +146,7 @@ async def collect(session):
 
 async def main():
     IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-    conn = await asyncpg.connect(DB_DSN)
+    conn = await asyncpg.connect(DB_DSN, statement_cache_size=0)
     await init_db(conn)
     async with aiohttp.ClientSession() as session:
         print(f"[*] coletando lista...")
