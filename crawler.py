@@ -130,7 +130,7 @@ async def crawl_manga(session, conn, manga):
         "VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (slug) DO UPDATE SET title=EXCLUDED.title RETURNING id",
         slug, title, cover_path, "", genres, status, source_url)
 
-    detail = await get_json(session, f"{API}/manhwa/{real_id}")
+    detail = await get_json(session, f"{API}/manhwa/see/{real_id}")
     if not detail:
         return
 
