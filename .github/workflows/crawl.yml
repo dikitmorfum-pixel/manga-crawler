@@ -22,5 +22,4 @@ jobs:
 
       - name: Rodar crawler
         env:
-          DB_DSN: ${{ secrets.DB_DSN }}
-        run: python crawler.py --site https://toonlivre.net
+          DB_DSN: ${{ secrets.DB_DSN }}run: python crawler.py --site https://toonlivre.net/o-retorno-do-cao-de-caca-dos-baskerville
