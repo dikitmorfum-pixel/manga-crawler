@@ -101,10 +101,14 @@ async def crawl_manga(session, conn, manga_url, base):
     soup = await get(session, manga_url)
     if not soup:
         return
-    tel = soup.select_one(SEL["title"])
-    if not tel:
-        return
-    title = tel.get_text(strip=True)
+   tel = soup.select_one(SEL["title"])
+if not tel:
+    print(f"  [SKIP] título não encontrado em {manga_url}")
+    return
+title = tel.get_text(strip=True)
+if not title:
+    print(f"  [SKIP] título vazio em {manga_url}")
+    return
     slug = slugify(title)
     cel = soup.select_one(SEL["cover"])
     csrc = (cel.get("data-src") or cel.get("src")) if cel else None
