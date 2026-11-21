@@ -44,7 +44,7 @@ async def get_json(session, url):
     try:
         async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=20)) as r:
             if r.status == 200:
-                return await r.json()
+                return await r.json(content_type=None)
             print(f"  [HTTP {r.status}] {url}")
     except Exception as e:
         print(f"  [ERR] {url} {e}")
@@ -63,9 +63,9 @@ async def dl(session, url, dest):
         print(f"  [IMG] {url} {e}")
 
 async def crawl_chapter(session, conn, manga_id, manga_slug, chap):
-    chap_id = chap.get("id") or chap.get("_id") or ""
-    ctitle = str(chap.get("titulo") or chap.get("title") or chap.get("numero") or chap_id)
-    cnum = chapnum(chap.get("numero") or chap.get("number") or ctitle)
+    chap_id = chap.get("_id") or chap.get("id") or ""
+    cnum = chapnum(chap.get("numero") or chap.get("number") or chap.get("_numero") or 0)
+    ctitle = f"Capitulo {cnum}"
     cslug = slugify(ctitle)
     url = f"{BASE}/manhwa/{manga_slug}/capitulo-{cnum}"
 
@@ -103,40 +103,40 @@ async def crawl_chapter(session, conn, manga_id, manga_slug, chap):
     print(f"    cap {cnum} ({len(tasks)}p)")
 
 async def crawl_manga(session, conn, manga):
-    slug = manga.get("slug") or manga.get("id") or ""
-    title = manga.get("titulo") or manga.get("title") or manga.get("nombre") or slug
-    if not slug or not title:
+    real_id = manga.get("real_id") or manga.get("_id") or ""
+    title = manga.get("the_real_name") or manga.get("name_esp") or real_id
+    if not real_id or not title:
+        print(f"  [SKIP] sem id/titulo")
         return
 
+    slug = slugify(title)
     print(f"  -> {title}")
+
     cover_path = None
-    csrc = manga.get("portada") or manga.get("cover") or manga.get("imagen") or ""
+    csrc = manga.get("_imagen") or ""
     if csrc:
-        if csrc.startswith("/"):
-            csrc = API + csrc
         ext = Path(urlparse(csrc).path).suffix or ".jpg"
-        cf = IMAGE_DIR / "covers" / f"{slugify(title)}{ext}"
+        cf = IMAGE_DIR / "covers" / f"{slug}{ext}"
         if await dl(session, csrc, cf):
             cover_path = str(cf)
 
-    synopsis = manga.get("sinopsis") or manga.get("synopsis") or manga.get("descripcion") or ""
-    genres = manga.get("generos") or manga.get("genres") or []
-    if isinstance(genres, list):
-        genres = [g if isinstance(g, str) else (g.get("nombre") or g.get("name") or "") for g in genres]
-    status = manga.get("estado") or manga.get("status") or "desconhecido"
-    source_url = f"{BASE}/manhwa/{slug}"
+    status = manga.get("_status") or "desconhecido"
+    demografia = manga.get("_demografi") or ""
+    genres = [demografia] if demografia else []
+    source_url = f"{BASE}/manhwa/{real_id}"
 
     mid = await conn.fetchval(
         "INSERT INTO mangas (slug,title,cover_path,synopsis,genres,status,source_url) "
         "VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (slug) DO UPDATE SET title=EXCLUDED.title RETURNING id",
-        slugify(title), title, cover_path, synopsis, genres, status, source_url)
+        slug, title, cover_path, "", genres, status, source_url)
 
-    detail = await get_json(session, f"{API}/manhwa/{slug}")
+    detail = await get_json(session, f"{API}/manhwa/{real_id}")
     if not detail:
         return
 
-    chapters = detail.get("capitulos") or detail.get("chapters") or []
-    chapters = sorted(chapters, key=lambda c: chapnum(c.get("numero") or c.get("number") or 0))
+    chapters = detail.get("capitulos") or detail.get("chapters") or detail.get("caps") or []
+    if isinstance(chapters, list):
+        chapters = sorted(chapters, key=lambda c: chapnum(c.get("numero") or c.get("number") or 0))
     print(f"     {len(chapters)} caps")
 
     for chap in chapters:
@@ -144,19 +144,22 @@ async def crawl_manga(session, conn, manga):
         await asyncio.sleep(DELAY)
 
 async def collect(session):
-    urls, page = [], 0
+    mangas, page = [], 0
     while True:
         data = await get_json(session, f"{API}/manhwa/library?buscar=&tipo=manhwa&erotico=&estado=&order_item=alfabetico&order_dir=desc&page={page}&generes=")
         if not data:
             break
-        items = data if isinstance(data, list) else (data.get("data") or data.get("mangas") or data.get("items") or [])
+        items = data.get("data") or []
         if not items:
             break
-        urls.extend(items)
+        mangas.extend(items)
         print(f"  Pagina {page}: {len(items)} mangas")
+        has_next = data.get("next", False)
+        if not has_next:
+            break
         page += 1
         await asyncio.sleep(DELAY)
-    return urls
+    return mangas
 
 async def main():
     IMAGE_DIR.mkdir(parents=True, exist_ok=True)
