@@ -23,4 +23,4 @@ jobs:
       - name: Rodar crawler
         env:
           DB_DSN: ${{ secrets.DB_DSN }}
-        run: python crawler.py --site https://manhwaweb.com/manhwa/guia-de-supervivencia-del-extra-de-la-academia_17115934334710
+                run: python crawler.py
