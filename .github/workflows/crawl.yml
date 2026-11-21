@@ -23,4 +23,4 @@ jobs:
       - name: Rodar crawler
         env:
           DB_DSN: ${{ secrets.DB_DSN }}
-                run: python crawler.py
+        run: python crawler.py
